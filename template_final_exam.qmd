@@ -1,0 +1,181 @@
+---
+title: "Final Exam Instructions"
+subtitle: |
+  | Advanced Regression (STAT 355-0)
+  | Winter 2025
+author: "YOUR NAME"
+pagetitle: "Final Exam: YOUR NAME"
+date: today
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    embed-resources: true
+    code-fold: false
+    link-external-newwindow: true
+    theme: cosmo
+
+execute:
+  warning: false
+
+from: markdown+emoji
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+To link to your github **repo**sitory, appropriately edit the example link below. Meaning replace `https://your-github-repo-url` with your github repo url. Suggest verifying the link works before submitting.
+
+[https://your-github-repo-url](https://your-github-repo-url)
+
+:::
+
+## An Overview of the Problem
+
+Homelessness remains a critical issue across the United States, affecting hundreds of thousands of individuals each year. Despite numerous efforts to address the problem, recent data indicates that the number of homeless individuals has been increasing in several major metropolitan areas. Understanding the factors that contribute to homelessness is crucial for developing effective policies to mitigate this growing crisis.
+
+## The Data
+
+The data for this exam is sourced from the U.S. Department of Housing and Urban Development (HUD) and the U.S. Census Bureau, encompassing variables related to housing market conditions, economic factors, social safety nets, demographic characteristics, and climate data, all of which are critical in analyzing homelessness across various communities.
+
+All of the information that you need to understand this data is provided in the `data/` sub-directory. This includes:
+
+- `05b_analysis_file_update.csv` : The data
+- `HUD TO3 - 05b Analysis File - Data Dictionary.xlsx` : The data dictionary
+
+## This Exam 
+ 
+For this exam, we will focus in particular on one outcome:
+
+  - `homelessness_rate`^[Not included in the data and must be calculated]: This represents the rate of homeless individuals as counted during the annual PIT survey. It is calculated by dividing the variable `pit_tot_hless_pit_hud` by `dem_pop_pop_census`, focusing exclusively on the **year 2017**.
+  
+::: {.callout-note}
+
+**A strong exam is one that is judicious in what is presented (you can put materials in an Appendix), that explains the decisions and assumptions that were made and why, that explains how the results should be interpreted, and that is clear in any limitations.**
+
+Put another way, there is no single right answer to this analysis problem. There are many suitable approaches. Of course, there are approaches that are clearly not suitable too. The key is to concisely explain your work and provide evidence and/or sound reasoning for why your approach is appropriate. This includes identifying issues or limitations with your approach. 
+
+As George Box said, "All models are wrong, but some are useful."
+
+:::  
+
+## Questions
+
+### Question 1
+
+After exploring the outcome, what type of regression model might you use to for `homelessness_rate`? Explain your choice. If you considered more than one type, explain how you arrived at each and how you made your final decision. 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+YOUR SOLUTION HERE
+
+```{r}
+
+
+```
+
+:::
+
+### Question 2
+
+The variable `homelessness_rate` represents the rate of homeless individuals per population unit. You hypothesize that the following variables may be associated with this outcome:
+
+- `econ_labor_unemp_rate_BLS`: Unemployment rate
+- `dem_soc_ed_hsgrad_acs5yr_2017`: Percentage of the population that are high school graduates in the
+population unit
+- `econ_labor_medinc_acs5yr_2017`: Median income in the population unit
+- `hou_mkt_medrent_acs5yr_2017`: Median rent in the population unit
+- `env_wea_avgtemp_summer_noaa`: Average summer temperature (June, July, August)
+
+Please perform an analysis to evaluate the relationship between these variables and the `homelessness_rate`. Be sure to interpret your findings and draw clear conclusions based on your analysis.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+YOUR SOLUTION HERE
+
+```{r}
+
+
+```
+
+:::
+
+
+### Question 3
+
+Are there any non-linearities in these relationships explored in Question 2? Investigate and explain.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+YOUR SOLUTION HERE
+
+```{r}
+
+
+```
+
+:::
+
+
+### Question 4
+
+How do these effects vary between rural and non-rural areas (suburban and major cities)? Use the variable `rural` (an indicator of rural areas) to explore these differences. Interpret your findings and discuss any significant variations you observe.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+YOUR SOLUTION HERE
+
+```{r}
+
+
+```
+
+:::
+
+
+### Question 5 
+
+Examining the data^[Only consider data from the year 2017.], there are many other possible variables that could be used to model homelessness rates (`homelessness_rate`) than those hypothesized in #2. Develop a strategy and implement it to develop the best model for predicting homelessness rates. How well does this model predict homelessness rates? How much better (or worse) at predicting homelessness rates is it than the model developed in #2? 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+YOUR SOLUTION HERE
+
+```{r}
+
+
+```
+
+:::
+
+### Question 6
+
+Imagine that based upon your results in #5, the model you develop will be used by federal agencies to direct block grants^[A grant which allows local authorities to decide how the funds will be used.] for assisting with homelessness. Would you suggest your model for this use? Explain. 
+
+Suppose the model you develop will also be used by federal agencies to direct funds to specific causes of homelessness. Would you suggest your model for this use? Explain.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+YOUR SOLUTION HERE
+
+```{r}
+
+
+```
+
+:::
+
+## Appendix 
+
+Only include this sectoin if needed. Otherwise delete it. 
