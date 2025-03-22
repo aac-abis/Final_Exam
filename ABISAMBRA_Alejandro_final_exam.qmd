@@ -1,0 +1,1317 @@
+---
+title: "Final Exam ABISAMBRA"
+subtitle: |
+  | Advanced Regression (STAT 355-0)
+  | Winter 2025
+author: "Alejandro Abisambra"
+pagetitle: "Final Exam: ABISAMBRA"
+date: today
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    embed-resources: true
+    code-fold: false
+    link-external-newwindow: true
+    theme: cosmo
+
+execute:
+  warning: false
+
+from: markdown+emoji
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+Link to my GitHub:
+[https://github.com/aac-abis/Final_Exam](https://github.com/aac-abis/Final_Exam)
+
+:::
+
+## An Overview of the Problem
+
+Homelessness remains a critical issue across the United States, affecting hundreds of thousands of individuals each year. Despite numerous efforts to address the problem, recent data indicates that the number of homeless individuals has been increasing in several major metropolitan areas. Understanding the factors that contribute to homelessness is crucial for developing effective policies to mitigate this growing crisis.
+
+## The Data
+
+The data for this exam is sourced from the U.S. Department of Housing and Urban Development (HUD) and the U.S. Census Bureau, encompassing variables related to housing market conditions, economic factors, social safety nets, demographic characteristics, and climate data, all of which are critical in analyzing homelessness across various communities.
+
+All of the information that you need to understand this data is provided in the `data/` sub-directory. This includes:
+
+- `05b_analysis_file_update.csv` : The data
+- `HUD TO3 - 05b Analysis File - Data Dictionary.xlsx` : The data dictionary
+
+**Added by ABISAMBRA**: A list of what each geographic unit in the HUD data is (CoC Number) can be found in the following link: [list of CoCs](https://files.hudexchange.info/resources/documents/fy-2017-continuums-of-care-names-and-numbers.pdf)
+
+## This Exam 
+ 
+For this exam, we will focus in particular on one outcome:
+
+  - `homelessness_rate`^[Not included in the data and must be calculated]: This represents the rate of homeless individuals as counted during the annual PIT survey. It is calculated by dividing the variable `pit_tot_hless_pit_hud` by `dem_pop_pop_census`, focusing exclusively on the **year 2017**.
+  
+::: {.callout-note}
+
+**A strong exam is one that is judicious in what is presented (you can put materials in an Appendix), that explains the decisions and assumptions that were made and why, that explains how the results should be interpreted, and that is clear in any limitations.**
+
+Put another way, there is no single right answer to this analysis problem. There are many suitable approaches. Of course, there are approaches that are clearly not suitable too. The key is to concisely explain your work and provide evidence and/or sound reasoning for why your approach is appropriate. This includes identifying issues or limitations with your approach. 
+
+As George Box said, "All models are wrong, but some are useful."
+
+:::  
+
+```{r}
+#| include: false
+# library
+library(tidyverse)
+library(ggplot2)
+library(car)
+library(stargazer)
+library(performance)
+library(yardstick)
+library(lme4)
+library(patchwork)
+
+
+## Loading and cleaning the data
+hdata <- read.csv("data/05b_analysis_file_update.csv", sep = ",")
+
+# create outcome and filter to 2017
+hdata <- hdata %>% mutate(hless_rate = pit_tot_hless_pit_hud/dem_pop_pop_census) %>% 
+                    filter(year == 2017) %>% relocate(hless_rate, .after = cocnumber)
+
+# Deleting non-2017 variables : manual inspection in Excel File to create drop list
+droplist <- readxl::read_excel("data/HUD TO3 - 05b Analysis File - Data Dictionary_AAC.xlsx", 
+                               sheet = "Variable Labels_drop_aac") %>% 
+            dplyr::select(Variable) %>% pull(Variable)
+
+hdata <- hdata %>% select(-all_of(droplist))
+
+# Now removing variables for which there is no variation in our 2017 data
+constant_vars <- names(hdata)[sapply(hdata, function(x) n_distinct(x) == 1)]
+
+skimr::skim_without_charts(hdata %>% select(all_of(constant_vars)))
+
+hdata <- hdata %>% select(-all_of(constant_vars))
+hdata <- hdata %>% mutate(log_hless_rate = log(hless_rate))
+
+hdata <- hdata %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS)) %>% relocate(log_econ_labor_unemp_rate_BLS, .after = econ_labor_unemp_rate_BLS)
+```
+
+
+## Questions
+
+### Question 1
+
+After exploring the outcome, what type of regression model might you use to for `homelessness_rate`? Explain your choice. If you considered more than one type, explain how you arrived at each and how you made your final decision. 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+The outcome is a rate, therefore a continuous variable mechanically bounded between 0 and 1. However, as the left-pane histogram below shows, the distribution is highly skewed to the right, with most of the values being close to the zero bound. Indeed, the max value is only `r max(na.omit(hdata$hless_rate))`. 
+
+Importantly, however, a log-transformation of the outcome ($ln(\mathrm{hless\_rate})$) makes it look much closer to normally distributed, as shown in the right-pane Histogram below.
+
+```{r fig.width=12}
+#| echo: false
+par(mfrow = c(1,2))
+hist(hdata$hless_rate, freq = F, ylim = c(0,750), breaks = 50)
+lines(density(na.omit(hdata$hless_rate)), col = "blue", lwd = 2)
+
+hist(log(hdata$hless_rate), freq = F, breaks = 40)
+lines(density(log(na.omit(hdata$hless_rate))), col = "blue", lwd = 2)
+
+```
+
+Because the rate of homelessness (`hless_rate`) is made out of two elements (homeless count and total population), there are 3 main possible model families that can be used to model the outcome of interest (or a closely related one), as follows:
+
+* 1. Linear Gaussian Model (OLS) where the rate itself is the outcome. 
+* 2. Binomial GLM, where the homeless count is the number of successes and the total population is the number of trials.
+* 3. Poisson GLM, in a setting where the count variable (homeless people) is affected by a rate of exposure in each GeoUnit (the total population).
+
+**Overview of each Alternative (Plots and Additional Info in the Appendix)**
+
+* **1.Linear Gaussian Model (OLS) where the rate itself is the outcome.**
+
+As shown above, the log-transformed Homelessness Rate (`log_hless_rate`) is approximately normal. Further, as the GGally Scatterplots (Q1 Appendix) show, the relationship between the log-outcome and the covariates of interest in question 2 appears to be generally linear. For this reason, a linear model for the log-rate seems appropriate. Also, the log-transformation expands the range of the outcome from $(- \infty ; 0)$ which removes or at least greatly minimizes) the issue of predictions outside the $(0;1)$ range in linear models. 
+
+Also, important to note that this is just the broad family of model, and it can be made more complex using hierarchical models and random effects, which I will explore in Question 2. 
+
+* **2. Setup: Binomial Variable with q trials and k successes**
+
+An alternative is to think of this rate as the probability of success in a series of binomial trials. Under this setting, each row of the dataset contains information about $q$ trials (`dem_pop_pop_census` = Total Pop of Geographic Unit in 2017) and $k$ "successes" (`pit_tot_hless_pit_hud` = Total Number of Homeless People in GeoUnit in 2017).
+
+If the number of rows on our data is $n$, then we can think of having a $n$ binomial trials, where each CoC (GeoUnit) corresponds to a different Binomial ($q$ trials and $k$ success) 'experiment'.
+
+Through this lens of the outcome, the model of choice would probably be some type of logistic regression model (perhaps a multi-level one by GeoUnit). 
+
+* **3. Poisson GLM, using the rate and adjusting for total population**
+
+Yet another alternative is to think of the underlying phenomenon (number of homeless people in GeoUnit) as a count variable, which is conceptualized as following a Poisson distribution. However, our unit of analysis (the CoC GeoUnit) do not have the same total population, so the 'risk set' of people that can potentially be homeless varies by GeoUnit. 
+
+This is equivalent to different GeoUnits having different 'rates of exposure', which may impact the total number of observed counts (# of Homeless People in GeoUnit). In this case, then, we can model the outcome as following a Poisson distribution for a given rate, as follows:
+
+$$Y_i \sim Poisson(\mu_i), \; where \; \mu_i = \theta_it_i$$
+Where $Y_i$ is the count (number of homeless people in GeoUnit $i$ in 2017), 
+
+$\theta_i$ represents the rate of homelessness, our outcome `hless_rate` = `pit_tot_hless_pit_hud ` / `dem_pop_pop_census`,  
+
+And $t_i$ represents the total population of the GeoUnit. All data is restricted to 2017, of course.
+
+In summary, under this approach: 
+$$Y_i \sim Poisson(\theta_it_i)$$
+
+Using the log-link function, this can be modelled in a Poisson GLM using an offset as follows:
+
+$$ 
+\begin{array}{c}
+g(\mu_i) = log(\mu_i) = log(t_i) + log(\theta_i) \\[0.5cm]  
+\text{Where :} \; log(\theta_i) = parameters = \beta_0 + \boldsymbol{\beta X} \\[0.5cm]
+\text{Resulting in:} \\[0.5cm]
+log(\mu_i) = log(t_i) + \beta_0 + \boldsymbol{\beta X}
+\end{array}
+$$
+
+And from this last equation we can proceed to run a Poisson GLM using R packages. Obviously, this is the base specification, and the Poisson GLM could then be made more complex by adding Random Effects at the state level. 
+
+
+* **4. Preferred Choice: Linear (Gaussian) Model**
+
+The decision will ultimately come down to model performance, model fit. However, in the event that the 3 types of models perform similarly, I will choose the Linear (Gaussian) family of models, for the following 3 reasons:
+
+- It is the model that sticks more closely with the desired outcome variable in the instructions (`homelessness_Rate`). The other models use elements of the rate (the numerator, denominator) but are not modelling the rate itself. 
+- It is the most easily interpretable model and the most parsimonious (assuming that they all have similar performance).For communication purposes it will have an edge over the others.
+- The relationship between the log-outcome and the predictors in Q2 appears to be generally linear (see ScatterPlot GGally in Appendix Q1).
+- Regardless of the model family chosen, I will keep in mind that the GeoUnits (CoCNumber) are nested within States. I will explore the usefulness of including State random-effects to improve model fit at different points in this project. 
+
+:::
+
+### Question 2
+
+The variable `homelessness_rate` represents the rate of homeless individuals per population unit. You hypothesize that the following variables may be associated with this outcome:
+
+- `econ_labor_unemp_rate_BLS`: Unemployment rate
+- `dem_soc_ed_hsgrad_acs5yr_2017`: Percentage of the population that are high school graduates in the
+population unit
+- `econ_labor_medinc_acs5yr_2017`: Median income in the population unit
+- `hou_mkt_medrent_acs5yr_2017`: Median rent in the population unit
+- `env_wea_avgtemp_summer_noaa`: Average summer temperature (June, July, August)
+
+Please perform an analysis to evaluate the relationship between these variables and the `homelessness_rate`. Be sure to interpret your findings and draw clear conclusions based on your analysis.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+### 1. Overview and Route Plan:
+
+Building on Q1 above, I begin by running the 3 types of models (Linear, Binomial, Poisson) of the outcome against the list of covariates suggested here in Q2. At this stage I am running the simple models without interactions or random-effects. The goal is to compare the performance of the 3 model families and choose the one that achieves the best balance between parsimony, interpretability, and model fit.
+
+To do this, I will compare the models using statistics like AIC, BIC, and RMSE. This will allow me to choose the general model family. Afterwards, I will explore different variations (interactions, random-effects) for the chosen model family to arrive at my preferred specification. I do all of this **after deleting 2 missing observations** (for more details, see appendix Q1 - Data Exploration and Missingness).
+
+### 2. Comparing Different Model Families on the short-list of covariates.
+
+The table below presents the summary results for each of the 3 model families, regressed on the list of covariates listed in Q2 above.^[There are 2 linear models `lm_1` and `lm_2`. These are substantively the same, but lm_1 was fitted using lm(), whereas lm_2 was fitted using glm(gaussian = identity link). As the table below shows, the two models are equivalent.] 
+
+The following are the important take-aways from the comparison of the parameters in the models:^[for more details on the code, see appendix Q2]
+
+* Not surprisingly, the Poisson (with offset for Population Total) and the Binomial Specifications are largely equivalent on all metrics, with some very minor discrepancies. This is due to the fact that the poisson model is scaling the counts by the exposure ratio, which in this case is the total population of the GeoUnit. This is equivalent to a binomial model where the total population (exposure ratio in Poisson model) corresponds to the number of "trials" in a GeoUnit with k successes (homeless count).
+* Across all specifications, each of the coefficients share the same sign in each row. 
+* In addition, except for unemployment, each row of coefficients shares similar levels of statistical significance. And most of the coefficients have a low p-value (p < 0.001).
+* In terms of the substantive relationships between the covariates and the outcome, all the models yield the same interpretations in terms of direction of the relationship and statistical significance. This is reassuring, since it shows that the relationship is not affected by the choice of link function of family type; leaving the question of model choice to be one about global fit and interpretability. 
+* The exception to the pattern is `econ_labor_unemp_rate_BLS`. I will explore potential non-linearities (in particular in the OLS case), as the GGally Scatterplot ^[see appendix Q1] shows that this variable is heavily skewed. 
+
+
+```{r}
+#| echo: false
+# Linear Fit (log-transformed outcome)
+lm_1 <- glm(log_hless_rate ~ econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + 
+             econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+             env_wea_avgtemp_summer_noaa, 
+           data = hdata, family = gaussian(link = "identity"))
+
+lm_2 <- lm(log_hless_rate ~ econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + 
+             econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+             env_wea_avgtemp_summer_noaa, 
+           data = hdata)
+
+# Binomial GLM Model
+binom_1 <- glm(cbind(pit_tot_hless_pit_hud, dem_pop_pop_census) ~ econ_labor_unemp_rate_BLS +
+                 dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                 hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa, 
+               data = hdata, family = binomial(logit))
+
+# Poisson GLM Model
+poisson_1 <- glm(pit_tot_hless_pit_hud ~ offset(log(dem_pop_pop_census)) + 
+                   econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 +
+                   econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+                   env_wea_avgtemp_summer_noaa,
+                 data = hdata, family = poisson(log))
+# S(lm_1)
+# S(binom_1)
+# S(poisson_1)
+
+stargazer(lm_1, lm_2, binom_1, poisson_1, type = "text")  
+```
+In terms of global fit, it becomes clear that the linear specification has a much lower AIC and BIC than the Binomial and Poisson alternatives.  In addition, the linear models (`lm_`) explain a meaningful portion of the variance in the data ($R^2 \approx 0.43$). The RMSE is not really comparable across models in this case, as the units are different in each family model. I will use MAPE instead for this assessment of fit, since its a percentage measure (further down).
+
+```{r}
+#| echo: false
+compare_performance(lm_1, lm_2, binom_1, poisson_1, 
+                    metrics = c("AIC", "BIC", "R2", "R2_adj", "RMSE")) %>% 
+      tibble() %>% select(-c(AIC_wt, BIC_wt, R2_Nagelkerke)) %>% knitr::kable(digits = 3, caption = "Model Global Fit Comparison")
+
+```
+
+\newline
+Finally, in terms of Mean Absolute Percentage Error (MAPE), the table below shows that the linear model performs much better than the alternatives in terms of prediction. The linear model only has a 6.5% MAPE, whereas the alterative model families are over 50% MAPE. 
+```{r}
+#| echo: false
+
+pred.lm_1 <- data.frame(
+  actual = lm_1$model$log_hless_rate,
+  predval = predict(lm_1, type = "response")
+)
+
+pred.lm_2 <- data.frame(actual = lm_2$model$log_hless_rate)
+pred.lm_2$predval <- predict(lm_2, type = "response")
+
+pred.binom_1 <- data.frame(actual1 = binom_1$model$`cbind(pit_tot_hless_pit_hud, dem_pop_pop_census)`)
+pred.binom_1 <-  pred.binom_1 %>% mutate(actual = actual1.pit_tot_hless_pit_hud/actual1.dem_pop_pop_census) %>% 
+                              select(-c(actual1.pit_tot_hless_pit_hud, actual1.dem_pop_pop_census))
+
+pred.binom_1$predval <- predict(binom_1, type = "response")
+
+pred.poisson_1 <- data.frame(actual = poisson_1$model$pit_tot_hless_pit_hud)
+pred.poisson_1$predval <- predict(poisson_1, type = "response")
+
+
+# Compute MAPE for each model and save results in a new dataframe
+  mape_metrics.df <- data.frame(model_name = character(), MAPE = double())
+
+  pred.df <- c("pred.lm_1", "pred.lm_2", "pred.binom_1", "pred.poisson_1")
+  modname <- c("lm_1", "lm_2", "binom_1", "poisson_1")
+
+for(i in 1:4){
+  target.df <- get(pred.df[i])
+  
+  mape_value <- mape(target.df, actual, predval)
+  
+  mape_metrics.df <- mape_metrics.df %>% add_row(model_name = modname[i],
+                                                 MAPE = (mape_value %>% pull(.estimate)))
+  
+  rm(target.df, mape_value)
+}
+  
+mape_metrics.df %>% knitr::kable(digits = 3, caption = "Mean Absolute Percentage Error MAPE")
+```
+
+**In conclusion, in the remainder of this project I will use linear models of the `log(hless_rate)` and discard the binomial and poisson GLM alternatives.** 
+
+### 3. Exploring Random-Effects (by State)
+
+*Note*: I am presenting here an analysis of random-effects at State level, where CoC's are nested. But I also tried RE by census region and census division as robustness. Nothing promising came out of it. Results in Appendix Q2, if you are curious.
+
+As a first step, introducing random-intercepts (by State) on a model without covariates shows that the random intercepts account for $30.4%$ of the variance.However, once the covariates are included, the variance accounted for by the random intercepts decreases to somewhere between $6.8%$ to $11%$, depending on how you account for the residual variance reduction induced by the covariates. The table below presents the summary of the ICC for the model with and without covariates. 
+
+```{r}
+#| echo: false
+lm.RE_int <- lmer(log_hless_rate ~ econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + 
+             econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+             env_wea_avgtemp_summer_noaa + (1|state), 
+             data = hdata, REML = F)
+
+lm.RE_intRegion <- lmer(log_hless_rate ~ econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + 
+             econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+             env_wea_avgtemp_summer_noaa + (1|census_region), 
+             data = hdata, REML = F)
+
+lm.RE_intDivision <- lmer(log_hless_rate ~ econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + 
+             econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+             env_wea_avgtemp_summer_noaa + (1|census_division), 
+             data = hdata, REML = F)
+
+lm.RE_int_noCovariates <- lmer(log_hless_rate ~ (1|state), 
+             data = hdata, REML = F)
+
+lm.RE_int_noCovariates2 <- lmer(log_hless_rate ~ (1|census_region), 
+             data = hdata, REML = F)
+
+lm.RE_int_noCovariates3 <- lmer(log_hless_rate ~ (1|census_division), 
+             data = hdata, REML = F)
+
+# S(lm.RE_int)
+# summary(lm.RE_int)
+# summary(lm.RE_intRegion)
+# summary(lm.RE_intDivision)
+
+# Convert the ICC objects to data frames
+a <- as.data.frame(icc(lm.RE_int_noCovariates))
+b <- as.data.frame(icc(lm.RE_int))
+
+# Combine the data frames and add row names
+icc_table <- rbind(a, b) %>% select(-optional)
+rownames(icc_table) <- c("RE intercepts w/out covariates", "RE intercepts w covariates")
+rm(a,b)
+
+# Display the table
+knitr::kable(icc_table, digits = 3, caption = "ICC Comparison")
+
+```
+
+  
+
+While the initial variance accounted by the RE was large (30%), introducing the covariates reduced this amount substantially. The key question is whether the Random Intercepts provide an improvement in the model that is statistically significant from the linear model without the random intercepts. The anova table below shows that the improvement is statistically significant. Going forward I will keep the random intercepts in my models.^[The covariates introduced are all Level 1. Their interpretation remains straightforward. No interactions with Level 2 covariates to be accounted for.] 
+
+```{r}
+#| echo: false
+anova(lm.RE_int, lm_2)
+```
+
+### 4. Testing Interactions:
+
+Now I move to testing whether there are statistically significant interactions between the covariates that should be accounted for. 
+
+To do this, I run a model with all two-way interactions and then perform a Type II Anova test (chi-square) of the deviance changes.
+
+```{r}
+#| echo: false
+lm.RE_int_all <- lmer(log_hless_rate ~ (econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + 
+             econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 +
+             env_wea_avgtemp_summer_noaa)^2 + (1|state), 
+             data = hdata, REML = F)
+
+a <- Anova(lm.RE_int_all)
+
+a %>% knitr::kable(digits = 4, caption = "Analysis of Deviance Table (Type II Wald chisquare tests)")
+```
+
+The table above allows to identify the following:
+
+* The only interaction that is significant ($p<0.05$) is that between the unemployment rate and the share of HighSchool graduates in the GeoUnit. All other interactions are not statistically significant in terms of improvement of model fit (Chi-Square test of deviance change).
+* The unemployment rate `econ_labor_unemp_rate_BLS` is not statistically significant. However, I will still include it in the model since it was explicitly instructed in the Q2 prompt. 
+
+### 5. Preferred Model and Interpretation
+
+All of the above yields the following model below, in a specification that includes random-intercepts at the State level. 
+
+```{r}
+#| echo: false
+lm.RE_finalQ2 <- lmer(log_hless_rate ~ econ_labor_unemp_rate_BLS*dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_finalQ2, type = "text")
+```
+  
+#### Interpretation:
+
+* The constant is not directly/intuitively interpretable in this context, given that the predictors are not centered at their mean. When all covariates are at zero, a hypothetical GeoUnit would have a predicted homelessness rate of $0.0074 \approx 0.74\% = e^{-4.9}$. This is not very meaningful, obviously, since it doesn't make sense to think of all covariates being zero at the same time. 
+* In this context, and because we are interested in "impact" in this context, I will focus on the 'change' in the outcome for some changes in covariates. Since the model is linear, this change will be constant at every level of the covariates. 
+* **Predicted Changes:**
+  * All else equal, a 1-percetage point increase in the unemployment rate in a GeoUnit is associated with a $0.393 \;\; (= -0.015+0.408)$, equivalent to an approximate increase of 39% in the homelessness rate of the GeoUnit where the unemployment rate increased. (The outcome is logged) 
+  * All else equal, a 1-pp increase in the share of residents with HighSchool degree is associated with a $\approx 3.2\% = 0.047-0.015$ increase in the homeless rate. A counter intuitive finding to my priors about this phenomenon. 
+  
+  * All else equal, a one thousand (1,000) dollars increase in the median income of the GeoUnit is associated with a $\approx 5\% = -0.00005 * 1000$ decrease in the homelessness rate in the GeoUnit. Richer units have lower rates of homelessness. 
+  
+  * All else equal, a 1-unit increase in the median_rent_measure^[The unit of measurement is not clear. Ranges from 3.9 to 17.7. Codebook says it should be dollars, but that is clearly not true. It may be yearly rent in thousands, but its unclear. Research on the census page was not clear either. [Link](https://www.socialexplorer.com/data/ACS2017_5yr/metadata/?ds=ACS17_5yr&table=B25058)] is associated with a $\approx 24\%$ increase in the homelessness rate for the GeoUnit.
+  
+  * All else equal, a 1°F increase in the Average Summer Temperature is associated with a $\approx 3.1\%$ decrease in the homelessness rate. Colder places in the summer (which are also presumably colder in the winter) are associated with higher homelessness rates.
+:::
+
+
+### Question 3
+
+Are there any non-linearities in these relationships explored in Question 2? Investigate and explain.
+
+#### 0. Re-call the preferred model from last question
+
+$$
+\log(\text{hless_rate}) = \beta_{0j} + \beta_1\text{econ_labor_unemp_rate_BLS}_{ij} + \beta_2\text{hsgrad_acs5yr_2017}_{ij} +$$
+
+$$\beta_3(\text{econ_labor_unemp_rate_BLS} \times \text{hsgrad_acs5yr_2017}) + $$
+
+$$\beta_4\text{econ_labor_medinc_acs5yr_2017} + \beta_5\text{medrent_acs5yr_2017} + \beta_6\text{avgtemp_summer_noaa} + \epsilon_{ij}$$
+
+Where $\beta_{0j}$ represents the random-intercepts by State(j)
+
+::: {.callout-tip icon="false"}
+## Solution
+
+#### 1. Diagnosing Non-Linearity
+
+##### 1.1. QQ-Plot
+
+The first step to assess the potential presence of non-linearity is to evaluate whether the residuals of the model are approximately normally distributed, which is one of the supporting assumptions of my linear model of choice. 
+
+As the plot below shows, the evidence suggests this assumption is met, as the residuals are very-much on the 45-degree line in the plot against the theoretical distribution.
+
+```{r fig.width=5, fig.height=5}
+#| echo: false
+residuals <- resid(lm.RE_finalQ2)
+
+qqnorm(residuals, main = "QQ Plot for Model Residuals")
+qqline(residuals, col = "blue", lwd = 2)
+```
+
+##### 1.2. Component Residual Plots:
+
+Now I move to assess whether the relationship between the covariates and the outcome is linear, for which I will use component-residual plots. 
+
+In a first moment, I will assess the relationship only for the main effects, without accounting for the interaction between `econ_labor_unemp_rate_BLS` and `dem_soc_ed_hsgrad_acs5yr_2017`.
+
+**Main Effect C+R Plots**
+
+As the C+R Plots below show, the main effects have a linear relationship with the outcome and fit the data well, with the exception of `econ_labor_unemp_rate_BLS`. For this covariate, the linear trend significantly departs from the LOESS, and there also appears to be an extreme value that can be having undue influence in the model. I will explore these things more in-depth later on.
+
+In a couple of other cases, the LOESS line departs the linear-trend at the extremes of the X-axis, but this is an expected behavior of this smoother. 
+
+In general, there are no concern with the covariates, except for the unemployment rate (`econ_labor_unemp_rate_BLS`). However, this is an interacted term, so I will explore it in more depth in the C+R plots (further below) that account for the interaction. 
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| echo: false
+varlist <- c("econ_labor_unemp_rate_BLS", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017",
+                        "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:5){ 
+  assign(paste0("cplot", i), visreg::visreg(lm.RE_finalQ2, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+
+```{r fig.height=15, fig.width=10}
+#| message: false
+#| warning: false
+#| echo: false
+cplot1 + cplot2 + cplot3 + cplot4 + cplot5 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+
+
+```
+
+**C+R Plots: Interaction Term**
+
+The interaction term is one between 2 continuous variables. To assess the interaction, I will consider each "main effect" and plot a C+R Plot for it at the cut-points of the interacted variable (Plots at the 10th, 50th, and 90th percentiles of the interacted variable).
+
+The plots below reveal the following:
+* There appears to be non-linearity for `econ_labor_unemp_rate_BLS`. The top-plots show that, at different levels of `% of HighSchool`, the relationship between `econ_labor_unemp_rate_BLS` flips, from being positive to negative. 
+* The relationship between `% of HighSchool` appears to be linear and consistent, even if these plots look a bit less clean than the main effects C+R Plot in the previous section. 
+* In addition, further exploration of the `econ_labor_unemp_rate_BLS` reveals it is a highly skewed distribution (see GGally in Appendix Q1). I will explore adding quadratic terms and/or log-transforming this covariate in the next section below. I will also explore removing the outlier (CA-613: Imperial County, California) and assess the model without this observation. 
+
+```{r fig.height=10, fig.width=8}
+#| message: false
+#| warning: false
+#| echo: false
+cplotint1 <- visreg::visreg(lm.RE_finalQ2, "econ_labor_unemp_rate_BLS", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint2 <- visreg::visreg(lm.RE_finalQ2,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "econ_labor_unemp_rate_BLS",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint1 + cplotint2 + plot_layout(ncol = 1) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : Interaction - Unemployment * Share HS Degree",
+                  subtitle = "Panes at 10th, 50th, and 90th percentile of Interacted Variable",
+                  theme = theme(plot.title = element_text(hjust = 0.5),
+                                plot.subtitle = element_text(hjust = 0.5)))
+```
+
+#### 2. Correcting for Non-Linearity
+
+I explored the following alternatives to account for the non-linearty of `unemployment_rate`. For the detailed analysis and plots, please see Appendix Q3. 
+
+* Log-transforming `unemployment_rate`, including all observations. 
+* Including a quadratic term for `unemployment_rate`.
+* Excluding the outlier (CA-613: Imperial County), without transforming the `unemployment_rate` variable.
+* Excluding the outlier (CA-613: Imperial County), *AND log-transforming* the `unemployment_rate` variable.
+  * *Note: The (CA-613: Imperial County) is a very particular county at the border that has an intricate history with very high-levels of unemployment, among other things. I feel confident excluding this observation given how special it is. Info on the county* [here](https://en.wikipedia.org/wiki/Imperial_County,_California)
+
+```{r}
+#| echo: false
+#| include: false
+hdata <- hdata %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS))
+
+lm.RE_Q3_log <- lmer(log_hless_rate ~ log_econ_labor_unemp_rate_BLS*dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_Q3_log, type = "text")
+
+
+```
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| echo: false
+varlist <- c("log_econ_labor_unemp_rate_BLS", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017",
+                        "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:5){ 
+  assign(paste0("cplot_a", i), visreg::visreg(lm.RE_Q3_log, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| include: false
+cplot_a1 + cplot_a2 + cplot_a3 + cplot_a4 + cplot_a5 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+
+cplot1 + cplot_a1 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+
+```{r}
+#| echo: false
+#| include: false
+hdata$econ_unemp_poly1 <- poly(hdata$econ_labor_unemp_rate_BLS, 2, raw = TRUE)[,1]
+hdata$econ_unemp_poly2 <- poly(hdata$econ_labor_unemp_rate_BLS, 2, raw = TRUE)[,2]
+
+lm.RE_Q3_quad <- lmer(log_hless_rate ~ econ_unemp_poly1*dem_soc_ed_hsgrad_acs5yr_2017 + econ_unemp_poly2*dem_soc_ed_hsgrad_acs5yr_2017 +
+                        econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_Q3_quad, type = "text")
+
+
+```
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| echo: false
+varlist <- c("econ_unemp_poly1", "econ_unemp_poly2", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017", "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:6){ 
+  assign(paste0("cplot_b", i), visreg::visreg(lm.RE_Q3_quad, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| include: false
+cplot_b1 + cplot_b2 + cplot_b3 + cplot_b4 + cplot_b5 + cplot_b6 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+
+```{r fig.height=10, fig.width=8}
+#| message: false
+#| warning: false
+#| echo: false
+#| include: false
+cplotint1quad <- visreg::visreg(lm.RE_Q3_quad, "econ_unemp_poly1", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint2quad <- visreg::visreg(lm.RE_Q3_quad, "econ_unemp_poly2", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint3quad <- visreg::visreg(lm.RE_Q3_quad,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "econ_unemp_poly1",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint4quad <- visreg::visreg(lm.RE_Q3_quad,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "econ_unemp_poly2",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint1quad + cplotint2quad + cplotint3quad + cplotint4quad  + plot_layout(ncol = 1) + 
+  plot_annotation(title = "C-R Plots Q3 Quad Model : Interaction - Unemployment * Share HS Degree",
+                  subtitle = "Panes at 10th, 50th, and 90th percentile of Interacted Variable",
+                  theme = theme(plot.title = element_text(hjust = 0.5),
+                                plot.subtitle = element_text(hjust = 0.5)))
+```
+
+
+```{r}
+#| echo: false
+#| include: false
+hdata_trim <- hdata %>% filter(!(cocnumber == "CA-613"))
+hdata_trim <- hdata_trim %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS))
+
+lm.RE_Q3_trim <- lmer(log_hless_rate ~ log_econ_labor_unemp_rate_BLS*dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata_trim, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_Q3_trim, type = "text")
+
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+#| echo: false
+varlist <- c("log_econ_labor_unemp_rate_BLS", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017",
+                        "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:5){ 
+  assign(paste0("cplot_c", i), visreg::visreg(lm.RE_Q3_trim, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+
+```{r fig.height=15, fig.width=10}
+#| message: false
+#| warning: false
+#| echo: false
+#| include: false
+cplot_c1 + cplot_c2 + cplot_c3 + cplot_c4 + cplot_c5 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+
+
+```
+
+
+
+```{r fig.height=10, fig.width=8}
+#| message: false
+#| warning: false
+#| echo: false
+#| include: false
+cplotint1_trim <- visreg::visreg(lm.RE_Q3_trim, "log_econ_labor_unemp_rate_BLS", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint2_trim <- visreg::visreg(lm.RE_Q3_trim,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "log_econ_labor_unemp_rate_BLS",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint1_trim + cplotint2_trim + plot_layout(ncol = 1) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : Interaction - Unemployment * Share HS Degree",
+                  subtitle = "Panes at 10th, 50th, and 90th percentile of Interacted Variable",
+                  theme = theme(plot.title = element_text(hjust = 0.5),
+                                plot.subtitle = element_text(hjust = 0.5)))
+```
+
+**Main Takeaway**
+
+As the comparative plot below shows, the strategy that best accounted for non-linearity was a **log-transformation of `unemployment_rate` AND excluding the outlier observation**. This alternative corresponds to the bottom-left pane below.
+
+Moving forward I will use this adjusted model as my preferred specification. 
+
+
+```{r fig.width=8, fig.height=10}
+#| message: false
+#| warning: false
+#| echo: false
+cplot1 + cplot_a1 + cplot_b1 +cplot_b2 + cplot_c1 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Unemployment (transformations) : No Interactions accounted for",
+                  subtitle = "Each transformation was run in a separate model (linear, log, quadratic)",
+                  theme = theme(plot.title = element_text(hjust = 0.5),
+                                plot.subtitle = element_text(hjust = 0.5)))
+```
+
+
+:::
+
+
+### Question 4
+
+How do these effects vary between rural and non-rural areas (suburban and major cities)? Use the variable `rural` (an indicator of rural areas) to explore these differences. Interpret your findings and discuss any significant variations you observe.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+To avoid triple interactions, I will remove the interaction term in my model (`log_unemployment_rate` * `%HighSchoolDegree`). The substantive conclusions remain the same, and the interaction term only induces a minor reduction in deviance and AIC. For analytical purposes, and because rurality is a more interesting phenomenon for our question of interest, I will remove the interaction going forward. 
+
+Instead, I will focus on interactions of the main effects with rurality.
+
+### 1. Testing which Interactions with Rurality are Significant
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+lm.RE_Q3_trim2 <- lmer(log_hless_rate ~ log_econ_labor_unemp_rate_BLS + dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state),
+                          data = hdata_trim, REML = F)
+
+lm.RE_Q4_allinter <- update(lm.RE_Q3_trim2, 
+                               . ~ . + (log_econ_labor_unemp_rate_BLS + 
+                                        dem_soc_ed_hsgrad_acs5yr_2017 + 
+                                        econ_labor_medinc_acs5yr_2017 +
+                                        hou_mkt_medrent_acs5yr_2017 + 
+                                        env_wea_avgtemp_summer_noaa) * rural)
+
+lm.RE_Q4_inter <- update(lm.RE_Q3_trim2, 
+                               . ~ . + (econ_labor_medinc_acs5yr_2017 +
+                                        hou_mkt_medrent_acs5yr_2017) * rural)
+
+
+lm.RE_Q4_final <- lmer(log_hless_rate ~ econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa +
+                         (econ_labor_medinc_acs5yr_2017 +
+                                        hou_mkt_medrent_acs5yr_2017) * rural + (1|state),
+                          data = hdata_trim, REML = F)
+
+```
+
+**Summary of Interactions that are Significant**
+
+As the Anova (type II Chi-sq test) table below shows, the only terms with a statistically significant interaction with Rurality are:
+* `econ_labor_medinc_acs5yr_2017` Median Income (p<0.05)
+* `hou_mkt_medrent_acs5yr_2017` Median Rent (p<0.001)
+
+The rurality term on its own is also significant (p<0.05).
+
+```{r}
+#| echo: false
+Anova(lm.RE_Q4_allinter)
+```
+
+  
+Also, interestingly, adding the rurality term (and the interactions with `median_income` and `median_rent`) leads to the terms for `log_unemployment` and `% HighSchool Degree` to lose its statistical significance in the model (see Appendix Q4). For this reason, going forward I will use the following covariates in my model:
+
+* Main Effects:
+  * `econ_labor_medinc_acs5yr_2017`
+  * `hou_mkt_medrent_acs5yr_2017`
+  * `env_wea_avgtemp_summer_noaa`
+  * `rural`
+* Interactions:
+  * `rural` x `econ_labor_medinc_acs5yr_2017`
+  * `rural` x `hou_mkt_medrent_acs5yr_2017`
+
+### Results: How Rural Areas are Different:
+
+For the covariates where the rural nature of a CoC are statistically significant (see just above), the difference of partial effects by rurality is shown in the plots below. 
+
+```{r}
+#| warning: false
+#| echo: false
+plot_4a <- visreg::visreg(lm.RE_Q4_final, "econ_labor_medinc_acs5yr_2017", by = "rural",
+               gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+plot_4b <- visreg::visreg(lm.RE_Q4_final, "hou_mkt_medrent_acs5yr_2017", by = "rural",
+               gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+plot_4a + plot_4b + plot_layout(ncol = 1) + 
+  plot_annotation(title = "Differential Partial Effects by Rural Status",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+There are two notable differences between rural areas and urban areas in relation to `median_income`, `median_rent`, and their relationship to the outcome (`log(hless_rate)`).
+1. The distribution of incomes and rents in the rural areas is more compressed towards the lower-end of the spectrum, as can be seen in the dots of the scatterplots and their location relative to the x-axis. In other words, rural areas tend to be poorer and have lower median rents. 
+
+2. The effects of income and rents on homelessness rate is more pronounced for rural areas than urban ones. We can see that in the slopes of the predicted values line. The slope of the rural areas (right-hand panes) is steeper than urban ones.
+  * For rural areas, an increase in median income leads to a **larger drop** of homelessness. 
+  * For rural areas, an increase in median rent leads to a **larger increase** in homelessness.
+
+For the specific coefficient results table of the preferred model in this question, please see Appendix Q4.
+
+:::
+
+
+### Question 5 
+
+Examining the data^[Only consider data from the year 2017.], there are many other possible variables that could be used to model homelessness rates (`homelessness_rate`) than those hypothesized in #2. Develop a strategy and implement it to develop the best model for predicting homelessness rates. How well does this model predict homelessness rates? How much better (or worse) at predicting homelessness rates is it than the model developed in #2? 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+This is a question of variable selection. To do this, I engaged in the following steps before running the variable selection algorithm (forwards-backwards stepwise):
+* Removed Variables that were not from year 2017. 
+* Removed variables that had no variance in the observations (after keeping only 2017 observations/rows).
+* Removed variables that perfectly identify each observation (cocnumber, panelvar).
+* I also removed the variables that directly measure homelessness for two reasons:
+  * Conceptual: it is not useful to predict homelessness based on other homelessness statistics (circular problem)
+  * Mathematical: In introduces collinearity issues and also potentially to non-identifiable models.
+* I used the baseline model from the Q4 Preferred specification as the baseline for the selection process.
+
+Given that forwards-backwards Step-Wise algorithm (MASS package) does not support mixed-effects models, for the purposes of this question I will revert back to a linear model without random-intercepts.
+
+Based on the forwards-backwards step-wise algorithm, the additional variables that are useful to be included (for predictive purposes) are the following: (For the code and summary results, see the appendix Q5. Results are too long)
+
+```{r}
+#| echo: false
+#| include: false
+## Engage in further reduction of potential variable candidates to ensure convergence in the models
+## There are too many candidates and AIC goes to negative infinity.
+
+hdata_trim <- hdata_trim %>% dplyr::select(-c(cocnumber, panelvar, econ_unemp_poly1, econ_unemp_poly2))
+
+
+# List based on data dictionary: selected outcomes related to homelessness pit_hud
+vars_to_drop <- c("pit_tot_shelt_pit_hud", "pit_tot_unshelt_pit_hud", "pit_tot_hless_pit_hud", "pit_ind_shelt_pit_hud", "pit_ind_unshelt_pit_hud", "pit_ind_hless_pit_hud", "pit_perfam_shelt_pit_hud", "pit_perfam_unshelt_pit_hud", "pit_perfam_hless_pit_hud", "pit_ind_chronic_hless_pit_hud", "pit_perfam_chronic_hless_pit_hud", "pit_vet_hless_pit_hud", "pit_miss", "pit_hless_balance", "pit_shelt_balance", "pit_unshelt_balance", "pit_shelt_pit_hud_share", "pit_unshelt_pit_hud_share", "pit_hless_pit_hud_share", "hou_pol_totalind_hud", "hou_pol_totalday_hud", "hou_pol_totalexit_hud", "hou_pol_numret6mos_hud", "hou_pol_numret12mos_hud", "hou_pol_fedfundcoc", "hou_pol_fund_project", "hou_pol_bed_es_hic_hud", "hou_pol_bed_oph_hic_hud", "hou_pol_bed_psh_hic_hud", "hou_pol_bed_rrh_hic_hud", "hou_pol_bed_sh_hic_hud", "hou_pol_bed_th_hic_hud", "hou_pol_perm_bed_hic_hud", "hou_pol_temp_bed_hic_hud", "econ_labor_force_pop_BLS", "econ_labor_emp_pop_BLS", "econ_labor_unemp_pop_BLS", "econ_labor_unemp_rate_BLS", "dem_pop_male_census", "dem_pop_child_census", "dem_soc_white_census")
+
+hdata_trim <- hdata_trim %>% dplyr::select(-all_of(vars_to_drop))
+
+```
+
+
+```{r}
+#| results: hide
+#| echo: false
+#| include: false
+# use the baseline model from the end of Q4 but without mixed-effects
+m0 <- lm(log_hless_rate ~ econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa +
+                         (econ_labor_medinc_acs5yr_2017 +
+                                        hou_mkt_medrent_acs5yr_2017) * rural,
+                          data = hdata_trim)
+
+m_full <- lm(log_hless_rate ~ . + econ_labor_medinc_acs5yr_2017:rural + hou_mkt_medrent_acs5yr_2017:rural,
+                          data = hdata_trim)
+
+#library(MASS)
+# Model Selection Algorithm:
+best_model <- MASS::stepAIC(m_full, scope = list(lower = m0, upper = m_full),
+                    direction = "both", data = hdata_trim)
+
+```
+The resulting model has more than 100 covariates, so producing the output here is not useful. 
+
+Importantly, it has the following goodness of fit statistics:
+
+Multiple R-squared:  0.9028,	Adjusted R-squared:  0.8254 
+F-statistic: 11.66 on 165 and 207 DF,  p-value: < 2.2e-16
+
+* The model has an incredibly high predictive power ($R^2 > 0.8$) and it is statistically significant in terms of global fit (F-stat P-vale < 0.0001). It does a very good job predicting which GeoUnits have high homelessness, but it is so large that it does not tell us much else or provides important insights about the relationships between covariates and outcome. 
+
+Results of the model in Appendix Q5.
+
+
+
+:::
+
+### Question 6
+
+Imagine that based upon your results in #5, the model you develop will be used by federal agencies to direct block grants^[A grant which allows local authorities to decide how the funds will be used.] for assisting with homelessness. Would you suggest your model for this use? Explain. 
+
+Suppose the model you develop will also be used by federal agencies to direct funds to specific causes of homelessness. Would you suggest your model for this use? Explain.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+1. If the federal government wants to use the model to 'direct' grants to geographies that are more/less affected by the issue, I think it would not be harmful to use the model to predict the geographies that are expected to have high homelessness rate. That being said, it would also be trivial to use a model that predicts the outcome `hless_rate`, when they also have access to the actual measurement. If they will still have access in the future to the statistic for homelessness, then using a predictive model for data that they directly observe is not useful. 
+
+However, if they loose access to the homelessness statistic in the future, but still have access to the predictors data, then using the predictive model is better than nothing. Important to note, however, that this would be predicting future outcomes (homelessness) based on associations that were 'true' in the past, but the patterns may change as time goes by. 
+
+2. If they want to use the model to direct funds to causes of homelessness, I would emphatically advise **against** it. This model, even if it has predictive power, has no grounds to be thought of as causal. We don't know that these associations are causal. To begin with, they co-occur in time (measured in same year). And there is no quasi-random or random assignment of 'treatments', and we dont even have good theories to explain the observed associations. (At least I don't in this project).
+
+As a consequence, I would strongly advise **against** using this model as a way to direct money towards causes of homelessness, since we have no reason to believe that they are, in fact, causal relationships.
+:::
+
+## Appendix 
+
+This appendix provides supporting code and extra output for the different questions (whenever needed). The appendix is divided following the question structure in the main document.
+
+
+### EDA and Question 1: Exploring the Outcome
+
+::: {.callout-tip icon="false"}
+## Solution
+
+### Data Preparation and Dropping variables that are not 2017, no variation
+```{r}
+#| eval: false
+## Loading and cleaning the data
+hdata <- read.csv("data/05b_analysis_file_update.csv", sep = ",")
+
+# create outcome and filter to 2017
+hdata <- hdata %>% mutate(hless_rate = pit_tot_hless_pit_hud/dem_pop_pop_census) %>% 
+                    filter(year == 2017) %>% relocate(hless_rate, .after = cocnumber)
+
+# Deleting non-2017 variables : manual inspection in Excel File to create drop list
+droplist <- readxl::read_excel("data/HUD TO3 - 05b Analysis File - Data Dictionary_AAC.xlsx", 
+                               sheet = "Variable Labels_drop_aac") %>% 
+            select(Variable) %>% pull(Variable)
+
+hdata <- hdata %>% select(-all_of(droplist))
+
+# Now removing variables for which there is no variation in our 2017 data
+constant_vars <- names(hdata)[sapply(hdata, function(x) n_distinct(x) == 1)]
+
+skimr::skim_without_charts(hdata %>% select(all_of(constant_vars)))
+
+hdata <- hdata %>% select(-all_of(constant_vars))
+hdata <- hdata %>% mutate(log_hless_rate = log(hless_rate))
+
+hdata <- hdata %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS)) %>% relocate(log_econ_labor_unemp_rate_BLS, .after = econ_labor_unemp_rate_BLS)
+```
+
+
+
+
+```{r}
+# Outcome + Initial List of Covariates of Interest (Question 2)
+hdata_redux <- hdata %>% select(cocnumber, hless_rate, econ_labor_unemp_rate_BLS, dem_soc_ed_hsgrad_acs5yr_2017, econ_labor_medinc_acs5yr_2017, hou_mkt_medrent_acs5yr_2017, env_wea_avgtemp_summer_noaa)
+
+skimr::skim(hdata_redux)
+
+# View(hdata %>%
+#   filter(is.na(hless_rate)))
+```
+
+
+**Missing Data**
+
+There are to observations that have missing values for the outcome. This is less than 1% of the data ($\frac{2}{376}$) so I feel comfortable just dropping these cases. In addition, these two cases (one area in Arkansas and the other one in NY State), have missing values for all the PIT_HUD related data. It would not make sense to do imputation purely based on Census, ACS, BLS, macro structural variables of these areas that are not tightly connected to the phenomenon of interest in terms of measurement. Finally, it is such a small fraction of data that it will likely not impact the main takeaways of the analysis. 
+
+##### **Exploring the Outcome**
+
+**1. Density distribution of Outcome**
+
+The outcome is a rate, therefore a continuous variable mechanically bounded between 0 and 1. However, as the histogram below shows, the distribution is highly skewed to the right, with most of the values being close to the zero bound. Indeed, the max value is only `r max(na.omit(hdata_redux$hless_rate))`.
+```{r}
+hist(hdata_redux$hless_rate, freq = F, ylim = c(0,750), breaks = 50)
+lines(density(na.omit(hdata_redux$hless_rate)), col = "blue", lwd = 2)
+```
+
+**Log-transformation of outcome**
+
+Because of this, I decide to log-transform the outcome ($ln(\text{hless_rate)}$) which makes it look much closer to normally distributed, as shown in the Histogram below:
+```{r}
+hist(log(hdata_redux$hless_rate), freq = F, breaks = 40)
+lines(density(log(na.omit(hdata_redux$hless_rate))), col = "blue", lwd = 2)
+```
+
+**2. Pairwise Scatterplots with the Short List of Covariates (from Question 2)**
+```{r}
+hdata_redux <- hdata_redux %>% mutate(log_hless_rate = log(hless_rate)) %>% relocate(log_hless_rate, .after = cocnumber)
+hdata_redux <- hdata_redux %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS)) %>% relocate(log_econ_labor_unemp_rate_BLS, .after = econ_labor_unemp_rate_BLS)
+GGally::ggpairs((na.omit(hdata_redux) %>% select(-cocnumber)), progress = F)
+```
+The log-transformed outcome appears to have a linear relationship with the short-listed covariates from Question 2, which is a positive signal. There are some weak and non-significant correlations between the outcome and a couple of covariates (Unemployment and Median Income), but this is not evidence against linearity (which I will explore more in depth in Question 2, anyway).
+
+##### **Alternative Approach: Think of the rate as a Binomial Distribution**
+
+**1. Setup: Binomial Variable with q trials and k successes**
+
+An alternative is to think of this rate as the probability of success in a series of binomial trials. Under this setting, each row of the dataset contains information about $q$ trials (`dem_pop_pop_census` = Total Pop of Geographic Unit in 2017) and $k$ "successes" (`pit_tot_hless_pit_hud` = Total Number of Homeless People in GeoUnit in 2017).
+
+If the number of rows on our data is $n$, then we can think of having a $n$ binomial trials, where each CoC (GeoUnit) corresponds to a different Binomial ($q$ trials and $k$ success) 'experiment'.
+
+Through this lens of the outcome, the model of choice would probably be some type of logistic regression model (perhaps a multi-level one by GeoUnit). 
+
+**2. Poisson GLM, using the rate and adjusting for total population**
+
+Yet another alternative is to think of the underlying phenomenon (number of homeless people in GeoUnit) as a count variable, which is conceptualized as following a Poisson distribution. However, our unit of analysis (the CoC GeoUnit) do not have the same total population, so the 'risk set' of people that can potentially be homeless varies by GeoUnit. 
+
+This is equivalent to different GeoUnits having different 'rates of exposure', which may impact the total number of observed counts (# of Homeless People in GeoUnit). In this case, then, we can model the outcome as following a Poisson distribution for a given rate, as follows:
+
+$$Y_i \sim Poisson(\mu_i), \; where \; \mu_i = \theta_it_i$$
+Where $Y_i$ is the count (number of homeless people in GeoUnit $i$ in 2017), 
+
+$\theta_i$ represents the rate of homelessness, our outcome `hless_rate` = `pit_tot_hless_pit_hud ` / `dem_pop_pop_census`,  
+
+And $t_i$ represents the total population of the GeoUnit. All data is restricted to 2017, of course.
+
+In summary, under this approach: 
+$$Y_i \sim Poisson(\theta_it_i)$$
+
+Using the log-link function, this can be modelled in a Poisson GLM using an offset as follows:
+$$
+\begin{array}{c}
+g(\mu_i) = log(\mu_i) = log(t_i) + log(\theta_i) \\[0.5cm]  
+\text{Where :} \; log(\theta_i) = parameters = \beta_0 + \boldsymbol{\beta X} \\[0.5cm]
+\text{Resulting in:} \\[0.5cm]
+log(\mu_i) = log(t_i) + \beta_0 + \boldsymbol{\beta X}
+\end{array}
+$$
+
+And from this last equation we can proceed to run a Poisson GLM using R packages. Obviously, this is the base specification, and the Poisson GLM could then be made more complex by adding Random Effects at the state level. 
+:::
+
+
+### Question 2
+
+::: {.callout-tip icon="false"}
+## Solution
+```{r}
+
+
+```
+
+:::
+
+
+### Question 3
+
+::: {.callout-tip icon="false"}
+## Solution
+
+### Appendix Analysis for Correcting Non-Linearity
+
+**Exploring Log-transformed Models**
+```{r}
+hdata <- hdata %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS))
+
+lm.RE_Q3_log <- lmer(log_hless_rate ~ log_econ_labor_unemp_rate_BLS*dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_Q3_log, type = "text")
+
+
+```
+```{r}
+#| message: false
+#| warning: false
+
+varlist <- c("log_econ_labor_unemp_rate_BLS", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017",
+                        "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:5){ 
+  assign(paste0("cplot_a", i), visreg::visreg(lm.RE_Q3_log, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+```{r}
+#| message: false
+#| warning: false
+
+cplot_a1 + cplot_a2 + cplot_a3 + cplot_a4 + cplot_a5 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+
+cplot1 + cplot_a1 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+**Exploring Quadratic Models**
+```{r}
+
+hdata$econ_unemp_poly1 <- poly(hdata$econ_labor_unemp_rate_BLS, 2, raw = TRUE)[,1]
+hdata$econ_unemp_poly2 <- poly(hdata$econ_labor_unemp_rate_BLS, 2, raw = TRUE)[,2]
+
+lm.RE_Q3_quad <- lmer(log_hless_rate ~ econ_unemp_poly1*dem_soc_ed_hsgrad_acs5yr_2017 + econ_unemp_poly2*dem_soc_ed_hsgrad_acs5yr_2017 +
+                        econ_labor_medinc_acs5yr_2017 + hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_Q3_quad, type = "text")
+
+
+```
+```{r}
+#| message: false
+#| warning: false
+
+varlist <- c("econ_unemp_poly1", "econ_unemp_poly2", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017", "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:6){ 
+  assign(paste0("cplot_b", i), visreg::visreg(lm.RE_Q3_quad, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+```{r}
+#| message: false
+#| warning: false
+
+cplot_b1 + cplot_b2 + cplot_b3 + cplot_b4 + cplot_b5 + cplot_b6 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+
+```{r fig.height=10, fig.width=8}
+#| message: false
+#| warning: false
+
+cplotint1quad <- visreg::visreg(lm.RE_Q3_quad, "econ_unemp_poly1", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint2quad <- visreg::visreg(lm.RE_Q3_quad, "econ_unemp_poly2", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint3quad <- visreg::visreg(lm.RE_Q3_quad,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "econ_unemp_poly1",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint4quad <- visreg::visreg(lm.RE_Q3_quad,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "econ_unemp_poly2",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint1quad + cplotint2quad + cplotint3quad + cplotint4quad  + plot_layout(ncol = 1) + 
+  plot_annotation(title = "C-R Plots Q3 Quad Model : Interaction - Unemployment * Share HS Degree",
+                  subtitle = "Panes at 10th, 50th, and 90th percentile of Interacted Variable",
+                  theme = theme(plot.title = element_text(hjust = 0.5),
+                                plot.subtitle = element_text(hjust = 0.5)))
+```
+
+**Exploring Removing the Outlier and Logging**
+```{r}
+
+hdata_trim <- hdata %>% filter(!(cocnumber == "CA-613"))
+hdata_trim <- hdata_trim %>% mutate(log_econ_labor_unemp_rate_BLS = log(econ_labor_unemp_rate_BLS))
+
+lm.RE_Q3_trim <- lmer(log_hless_rate ~ log_econ_labor_unemp_rate_BLS*dem_soc_ed_hsgrad_acs5yr_2017 + econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa + (1|state), 
+                          data = hdata_trim, REML = F)
+# S(lm.RE_finalQ2)
+stargazer(lm.RE_Q3_trim, type = "text")
+
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+
+varlist <- c("log_econ_labor_unemp_rate_BLS", "dem_soc_ed_hsgrad_acs5yr_2017", "econ_labor_medinc_acs5yr_2017",
+                        "hou_mkt_medrent_acs5yr_2017", "env_wea_avgtemp_summer_noaa")
+ 
+for(i in 1:5){ 
+  assign(paste0("cplot_c", i), visreg::visreg(lm.RE_Q3_trim, varlist[i],
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+         ) 
+} 
+```
+
+
+```{r fig.height=15, fig.width=10}
+#| message: false
+#| warning: false
+
+cplot_c1 + cplot_c2 + cplot_c3 + cplot_c4 + cplot_c5 + plot_layout(ncol = 2) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : No Interactions accounted for",
+                  theme = theme(plot.title = element_text(hjust = 0.5)))
+
+
+```
+
+**C+R Plots: Interaction Term**
+
+```{r fig.height=10, fig.width=8}
+#| message: false
+#| warning: false
+
+cplotint1_trim <- visreg::visreg(lm.RE_Q3_trim, "log_econ_labor_unemp_rate_BLS", by = "dem_soc_ed_hsgrad_acs5yr_2017",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint2_trim <- visreg::visreg(lm.RE_Q3_trim,"dem_soc_ed_hsgrad_acs5yr_2017" , by = "log_econ_labor_unemp_rate_BLS",
+                                            gg = TRUE, partial = TRUE) +
+                              geom_smooth(method = loess, se = FALSE) + theme_minimal()
+
+cplotint1_trim + cplotint2_trim + plot_layout(ncol = 1) + 
+  plot_annotation(title = "C-R Plots for Q2 Model : Interaction - Unemployment * Share HS Degree",
+                  subtitle = "Panes at 10th, 50th, and 90th percentile of Interacted Variable",
+                  theme = theme(plot.title = element_text(hjust = 0.5),
+                                plot.subtitle = element_text(hjust = 0.5)))
+```
+
+
+:::
+
+
+### Question 4
+
+::: {.callout-tip icon="false"}
+## Solution
+**Anova Test for Model with Limited Interactions**
+```{r}
+Anova(lm.RE_Q4_inter)
+```
+  **Anova of Preferred Model in Q4**
+```{r}
+Anova(lm.RE_Q4_final)
+```
+  
+  **Results of Preferred Model in Q4**
+```{r}
+stargazer(lm.RE_Q4_final, type = "text")
+```
+
+:::
+
+
+
+### Question 5
+
+::: {.callout-tip icon="false"}
+## Solution
+
+**Code Of StepWise Selection (Suppressing Output, too loong)**
+```{r}
+#| results: hide
+#| eval: false
+# use the baseline model from the end of Q4 but without mixed-effects
+m0 <- lm(log_hless_rate ~ econ_labor_medinc_acs5yr_2017 +
+                        hou_mkt_medrent_acs5yr_2017 + env_wea_avgtemp_summer_noaa +
+                         (econ_labor_medinc_acs5yr_2017 +
+                                        hou_mkt_medrent_acs5yr_2017) * rural,
+                          data = hdata_trim)
+
+m_full <- lm(log_hless_rate ~ . + econ_labor_medinc_acs5yr_2017:rural + hou_mkt_medrent_acs5yr_2017:rural,
+                          data = hdata_trim)
+
+#library(MASS)
+# Model Selection Algorithm:
+best_model <- MASS::stepAIC(m_full, scope = list(lower = m0, upper = m_full),
+                    direction = "both", data = hdata_trim)
+
+```
+
+
+
+**Best Model Output**
+```{r}
+summary(best_model)
+```
+
+
+
+```{r}
+
+
+```
+
+:::
+
+
+
+### Question 6
+
+::: {.callout-tip icon="false"}
+## Solution
+```{r}
+
+
+```
+
+:::
